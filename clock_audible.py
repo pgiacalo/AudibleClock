@@ -56,14 +56,16 @@ def full_time_phrase(hour24, minute, use_24h=False):
 
 
 class Speaker:
-    """Non-blocking OS text-to-speech. Kills a still-speaking phrase before the
-    next one so callouts never pile up (the analog of speechSynthesis.cancel())."""
+    """Fire-and-forget OS text-to-speech. Each word is launched non-blocking so
+    the loop stays exactly on the system-clock second, and every word is allowed
+    to finish (never terminated), so nothing is ever clipped. A short word takes
+    well under a second, so callouts don't overlap in steady state; only the
+    longer top-of-minute phrase may spill slightly into the next second."""
 
     def __init__(self, rate=None, voice=None):
         self.system = platform.system()
         self.rate = rate
         self.voice = voice
-        self.proc = None
         self.backend = self._detect_backend()
 
     def _detect_backend(self):
@@ -99,7 +101,6 @@ class Speaker:
         if b in ("spd-say", "espeak-ng", "espeak"):
             cmd = [b]
             if b == "spd-say":
-                cmd += ["-w"]  # wait so the kill-on-next-tick logic behaves
                 if self.rate:
                     cmd += ["-r", str(self.rate)]
             elif self.rate:
@@ -111,22 +112,22 @@ class Speaker:
         return None, None
 
     def speak(self, text):
+        """Launch the OS engine to say `text` and return immediately. The word
+        is never terminated, so it always finishes without clipping. (Each new
+        Popen also reaps any finished helper processes, so none accumulate.)"""
         if not self.backend:
             print(f"[no TTS backend]  {text}")
             return
-        # Cancel a phrase that is still speaking to avoid backlog.
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
         cmd, stdin_text = self._command(text)
         try:
             if stdin_text is not None:
-                self.proc = subprocess.Popen(
+                proc = subprocess.Popen(
                     cmd, stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.proc.stdin.write(stdin_text.encode("utf-8"))
-                self.proc.stdin.close()
+                proc.stdin.write(stdin_text.encode("utf-8"))
+                proc.stdin.close()
             else:
-                self.proc = subprocess.Popen(
+                subprocess.Popen(
                     cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:  # noqa: BLE001
             print(f"[TTS error: {e}]  {text}")
@@ -162,8 +163,6 @@ def run(use_24h=False, rate=None, voice=None):
             print(f"{stamp}  {phrase}", flush=True)
             speaker.speak(phrase)
     except KeyboardInterrupt:
-        if speaker.proc and speaker.proc.poll() is None:
-            speaker.proc.terminate()
         print("\nStopped.")
 
 

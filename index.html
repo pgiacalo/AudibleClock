@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Audible Clock</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --panel: #171b22;
+      --fg: #e8edf4;
+      --muted: #8b95a3;
+      --accent: #4cc2ff;
+      --accent-2: #34d399;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: radial-gradient(1200px 800px at 50% -10%, #1c2430, var(--bg));
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 520px;
+      background: var(--panel);
+      border: 1px solid #232a34;
+      border-radius: 20px;
+      padding: 32px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+      text-align: center;
+    }
+    h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: 0.02em; margin: 0 0 4px; color: var(--muted); text-transform: uppercase; }
+    .clock {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      font-size: clamp(2.6rem, 12vw, 4.4rem);
+      line-height: 1.1;
+      margin: 12px 0 4px;
+    }
+    .spoken {
+      min-height: 1.6em;
+      color: var(--accent);
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin-bottom: 22px;
+    }
+    .controls { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    button {
+      appearance: none;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 26px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform .05s ease, opacity .15s ease;
+      color: #06121a;
+    }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: .35; cursor: default; }
+    #start { background: var(--accent-2); }
+    #stop { background: var(--danger); color: #1a0606; }
+    .row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-top: 22px; color: var(--muted); font-size: .92rem;
+    }
+    select {
+      background: #0e1218; color: var(--fg); border: 1px solid #2a323d;
+      border-radius: 8px; padding: 8px 10px; font-size: .92rem;
+    }
+    .hint { margin-top: 18px; color: var(--muted); font-size: .82rem; line-height: 1.5; }
+    .status { display: inline-flex; align-items: center; gap: 8px; font-size: .9rem; color: var(--muted); }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #55606e; }
+    .dot.live { background: var(--accent-2); box-shadow: 0 0 10px var(--accent-2); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Audible Clock</h1>
+    <div class="clock" id="clock">--:--:--</div>
+    <div class="spoken" id="spoken">&nbsp;</div>
+
+    <div class="controls">
+      <button id="start">▶ Start</button>
+      <button id="stop" disabled>■ Stop</button>
+    </div>
+
+    <div class="row">
+      <span class="status"><span class="dot" id="dot"></span><span id="statusText">Stopped</span></span>
+      <label>Voice
+        <select id="voice"></select>
+      </label>
+    </div>
+
+    <p class="hint">
+      Speaks the full time at the top of every minute (e.g. &ldquo;nine oh six&nbsp;PM&rdquo;),
+      then just the second count (&ldquo;one, two, three&hellip;&rdquo;) until the next minute.
+      Uses your computer&rsquo;s system clock. Keep this tab open; press&nbsp;Start to enable audio.
+    </p>
+  </main>
+
+  <script>
+    const synth = window.speechSynthesis;
+    const ones = ["zero","one","two","three","four","five","six","seven","eight","nine",
+      "ten","eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen"];
+    const tens = ["","","twenty","thirty","forty","fifty"];
+
+    // Number 0..59 to words.
+    function words(n) {
+      if (n < 20) return ones[n];
+      const t = Math.floor(n / 10), o = n % 10;
+      return o === 0 ? tens[t] : tens[t] + "-" + ones[o];
+    }
+
+    // Full-time phrase, e.g. "nine oh six PM", "nine o'clock PM", "nine fifteen PM".
+    function fullTimePhrase(h24, m) {
+      const ampm = h24 < 12 ? "AM" : "PM";
+      let h12 = h24 % 12; if (h12 === 0) h12 = 12;
+      let minutePart;
+      if (m === 0) minutePart = "o'clock";
+      else if (m < 10) minutePart = "oh " + words(m);
+      else minutePart = words(m);
+      return `${words(h12)} ${minutePart} ${ampm}`;
+    }
+
+    let selectedVoice = null;
+    const voiceSelect = document.getElementById("voice");
+
+    function loadVoices() {
+      const voices = synth.getVoices();
+      // Prefer English voices.
+      const preferred = voices.filter(v => /en(-|_|$)/i.test(v.lang));
+      const list = preferred.length ? preferred : voices;
+      voiceSelect.innerHTML = "";
+      list.forEach((v) => {
+        const opt = document.createElement("option");
+        opt.value = v.name;
+        opt.textContent = `${v.name} (${v.lang})`;
+        voiceSelect.appendChild(opt);
+      });
+      // Default: a natural-sounding en-US if present.
+      const def = list.find(v => /Samantha|Google US English|Microsoft/i.test(v.name)) || list[0];
+      if (def) { voiceSelect.value = def.name; selectedVoice = def; }
+    }
+    loadVoices();
+    if (typeof synth.onvoiceschanged !== "undefined") synth.onvoiceschanged = loadVoices;
+    voiceSelect.addEventListener("change", () => {
+      selectedVoice = synth.getVoices().find(v => v.name === voiceSelect.value) || null;
+    });
+
+    function speak(text) {
+      synth.cancel(); // avoid backlog if a phrase is still speaking
+      const u = new SpeechSynthesisUtterance(text);
+      if (selectedVoice) u.voice = selectedVoice;
+      u.rate = 1.0;
+      synth.speak(u);
+    }
+
+    const clockEl = document.getElementById("clock");
+    const spokenEl = document.getElementById("spoken");
+    const startBtn = document.getElementById("start");
+    const stopBtn = document.getElementById("stop");
+    const dot = document.getElementById("dot");
+    const statusText = document.getElementById("statusText");
+
+    let running = false;
+    let timer = null;
+    let lastSpokenSecond = -1;
+
+    function pad(n) { return String(n).padStart(2, "0"); }
+
+    function updateDisplay(now) {
+      let h12 = now.getHours() % 12; if (h12 === 0) h12 = 12;
+      const ampm = now.getHours() < 12 ? "AM" : "PM";
+      clockEl.textContent = `${pad(h12)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
+    }
+
+    // Fire once per system-clock second, aligned to the boundary.
+    function scheduleNext() {
+      const now = new Date();
+      const msToNextSecond = 1000 - now.getMilliseconds();
+      timer = setTimeout(tick, msToNextSecond);
+    }
+
+    function tick() {
+      if (!running) return;
+      const now = new Date();
+      updateDisplay(now);
+      const s = now.getSeconds();
+
+      // Guard against double-firing within the same second.
+      if (s !== lastSpokenSecond) {
+        lastSpokenSecond = s;
+        let phrase;
+        if (s === 0) phrase = fullTimePhrase(now.getHours(), now.getMinutes());
+        else phrase = words(s);
+        spokenEl.textContent = phrase;
+        speak(phrase);
+      }
+      scheduleNext();
+    }
+
+    function start() {
+      if (running) return;
+      running = true;
+      lastSpokenSecond = -1;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      dot.classList.add("live");
+      statusText.textContent = "Running";
+      // Unlock audio + speak the current full time immediately as confirmation.
+      const now = new Date();
+      updateDisplay(now);
+      lastSpokenSecond = now.getSeconds();
+      const phrase = fullTimePhrase(now.getHours(), now.getMinutes());
+      spokenEl.textContent = phrase;
+      speak(phrase);
+      scheduleNext();
+    }
+
+    function stop() {
+      running = false;
+      if (timer) clearTimeout(timer);
+      synth.cancel();
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      dot.classList.remove("live");
+      statusText.textContent = "Stopped";
+      spokenEl.innerHTML = "&nbsp;";
+    }
+
+    startBtn.addEventListener("click", start);
+    stopBtn.addEventListener("click", stop);
+
+    // Show the current time even before starting.
+    updateDisplay(new Date());
+    setInterval(() => { if (!running) updateDisplay(new Date()); }, 250);
+  </script>
+</body>
+</html>
